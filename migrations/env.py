@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, pool
 from identitybridge.config.settings import get_settings
 from identitybridge.infrastructure.audit_models import AuditEvent  # noqa: F401
 from identitybridge.infrastructure.database import Base
+from identitybridge.infrastructure.privilege_request_models import PrivilegeRequest  # noqa: F401
 from identitybridge.infrastructure.rate_limit_models import RateLimitCounter  # noqa: F401
 
 config = context.config

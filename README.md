@@ -1,92 +1,89 @@
-\# IdentityBridge
+# IdentityBridge
 
+IdentityBridge is an identity and access management security platform built with FastAPI, Keycloak and PostgreSQL. It provides OIDC sign-in, role-based access control (RBAC), identity administration, audit events and an application-level just-in-time (JIT) privileged-access workflow.
 
+## What it does
 
-Enterprise Identity and Access Management Security Platform.
+Users authenticate through Keycloak. IdentityBridge checks application-client roles before allowing protected operations. Users can request supported privileged roles for themselves; an `identity-admin` can approve or reject the request.
 
+Supported privileged roles: `identity-admin`, `security-analyst`, `auditor`. `standard-user` is managed through the ordinary user-role endpoints. Privileged roles cannot be directly assigned or removed through those endpoints.
 
+## Architecture
 
-\## Purpose
+- Keycloak: identity provider, OIDC authentication and client roles.
+- FastAPI: API, sessions, authorization and lifecycle services.
+- PostgreSQL: application persistence, JIT requests and audit records.
+- Expiry worker: processes eligible expirations only when explicitly enabled.
 
+This is an application-level JIT/PIM-style workflow, not Microsoft Entra PIM or Conditional Access.
 
+## Quick start
 
-IdentityBridge demonstrates enterprise identity security through:
+Requirements: Python 3.12+, Docker Desktop, `uv`, and Git Bash or a compatible shell.
 
+1. `cp .env.example .env`
+2. Replace every placeholder in `.env` with strong local secrets. Never commit or share `.env`.
+3. Start services: `docker compose up -d`
+4. Create `identitybridge_app` if it does not already exist. Do not drop the Keycloak database or persistent volume.
+5. Configure the `identitybridge` Keycloak realm, the `identitybridge-api` OIDC client and the dedicated `identitybridge-admin-service` client.
+6. Install dependencies: `uv sync --all-groups`
+7. Apply migrations: `uv run alembic upgrade head`
+8. Start API: `uv run uvicorn identitybridge.main:app --host 127.0.0.1 --port 8000`
 
+See [development setup](docs/development/setup.md) for complete configuration.
 
-\- OpenID Connect (OIDC) and Single Sign-On (SSO)
+## JIT workflow
 
-\- Multi-Factor Authentication (MFA)
+1. User submits a request for their own Keycloak subject, with a justification and duration.
+2. An `identity-admin` reviews the pending request.
+3. The administrator approves or rejects it. Self-approval is prohibited.
+4. Approval invokes the role grant workflow and records lifecycle/audit state.
+5. Expiry processing can revoke only roles proven to be JIT-granted.
 
-\- Role-Based Access Control (RBAC)
+Important current safety behaviour: the approval route passes `exclusive_role_writer=False`. An absent role is not blindly assigned; manual reconciliation may be required. Existing roles are treated as pre-existing and must not be automatically removed as JIT-owned. The expiry worker is disabled by default.
 
-\- Access policy evaluation
+## API overview
 
-\- Privileged access separation
+Interactive API docs: `http://localhost:8000/docs`
 
-\- Security audit logging
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/health/live` | Liveness |
+| GET | `/auth/login` | Start OIDC login |
+| GET | `/auth/callback` | OIDC callback |
+| GET | `/auth/me` | Current session |
+| POST | `/auth/logout` | Clear session |
+| POST | `/api/v1/privileges/requests` | Submit own JIT request |
+| GET | `/api/v1/privileges/requests` | List own requests |
+| GET | `/api/v1/privileges/pending` | List pending requests |
+| POST | `/api/v1/privileges/{request_id}/approve` | Approve request |
+| POST | `/api/v1/privileges/{request_id}/reject` | Reject request |
 
+User administration endpoints are under `/api/v1/admin/users`; example protected resources are under `/api/v1/access`.
 
+## Latest recorded validation
 
-\## Architecture
+- Full suite with PostgreSQL integration enabled: **160 passed**.
+- PostgreSQL lifecycle atomicity tests: **2 passed**.
+- Targeted JIT lifecycle/worker tests: **22 passed**.
+- Ruff: passed.
+- Python compilation: passed.
+- Four deprecation warnings were reported, without test failures.
+- Project owner reports successful manual real-world conflict testing; see [E2E/release testing](docs/testing/E2E_AND_RELEASE_TESTING.md).
 
+## Documentation
 
+- [Beginner user guide](docs/USER_GUIDE.md)
+- [Administrator guide](docs/ADMIN_GUIDE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [API reference](docs/API_REFERENCE.md)
+- [Security](docs/SECURITY.md)
+- [E2E and release testing](docs/testing/E2E_AND_RELEASE_TESTING.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Changelog](CHANGELOG.md)
+- [Release notes](RELEASE_NOTES.md)
+- [Contributing](CONTRIBUTING.md)
 
-The platform uses Keycloak as its identity provider, FastAPI as its application layer, and PostgreSQL for persistence.
+## Production warning
 
-
-
-\## Development
-
-
-
-See \[Development Setup](docs/development/setup.md) for complete installation and configuration instructions.
-
-
-
-\*\*Requirements:\*\*
-
-
-
-\- Python 3.12+
-
-\- uv
-
-\- Docker Desktop
-
-
-
-\## Security
-
-
-
-Never commit credentials, secrets, or production environment files.
-
-
-
-\## Authentication Rate Limiting
-
-
-
-IdentityBridge protects login and CSRF-token endpoints with PostgreSQL-backed fixed-window rate limiting.
-
-
-
-Default limits:
-
-
-
-\- Login: 10 requests per client IP per 60 seconds.
-
-\- CSRF-token requests: 30 requests per client IP per 60 seconds.
-
-
-
-Requests above the configured limit receive HTTP 429. Rate-limit storage failures fail closed with HTTP 503.
-
-
-
-See \[Authentication Rate Limiting](docs/security/rate-limiting.md) for configuration, privacy, proxy considerations, and counter retention.
-
-
-
+The local Compose setup uses Keycloak development mode. It is not production configuration. Production requires HTTPS, hardened identity/database infrastructure, secret management, monitoring, backup/restore validation, least-privilege review and operational procedures. A passing test suite is not a production security certification.

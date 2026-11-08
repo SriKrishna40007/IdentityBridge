@@ -117,3 +117,58 @@ def test_record_audit_event_rejects_missing_actor():
             target_user_id="user-456",
             outcome="success",
         )
+
+
+def test_add_audit_event_uses_caller_session_without_committing():
+    session = FakeSession()
+
+    event = audit_service.add_audit_event(
+        session,
+        actor_sub="admin-123",
+        actor_username="admin",
+        action="privilege.approve",
+        target_user_id="user-456",
+        outcome="success",
+        details={"role": "auditor", "password": "must-not-be-stored"},
+    )
+
+    assert len(session.added) == 1
+    assert session.added[0] is event
+    assert event.details == {"role": "auditor"}
+    assert not session.committed
+    assert not session.rolled_back
+    assert not session.closed
+
+
+def test_add_audit_event_rejects_invalid_actor():
+    session = FakeSession()
+
+    with pytest.raises(ValueError, match="Audit actor subject is required"):
+        audit_service.add_audit_event(
+            session,
+            actor_sub="",
+            actor_username=None,
+            action="privilege.approve",
+            target_user_id="user-456",
+            outcome="success",
+        )
+
+    assert not session.added
+    assert not session.committed
+
+
+def test_add_audit_event_rejects_invalid_outcome():
+    session = FakeSession()
+
+    with pytest.raises(ValueError, match="Invalid audit outcome"):
+        audit_service.add_audit_event(
+            session,
+            actor_sub="admin-123",
+            actor_username="admin",
+            action="privilege.approve",
+            target_user_id="user-456",
+            outcome="pending",
+        )
+
+    assert not session.added
+    assert not session.committed

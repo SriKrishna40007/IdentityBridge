@@ -32,6 +32,11 @@ class Settings(BaseSettings):
 
     session_secret: str = Field(min_length=32)
 
+    # JIT expiry worker: explicitly opt-in.
+    jit_worker_enabled: bool = False
+    jit_worker_interval_seconds: int = Field(default=30, gt=0)
+    jit_worker_batch_size: int = Field(default=50, ge=1, le=500)
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -8,6 +8,9 @@ from identitybridge.security.authorization import get_current_user
 
 
 class MockAdminClient:
+    def __init__(self):
+        self.roles = ["standard-user"]
+
     async def find_users(self, username):
         if username == "existing-user":
             return [{"id": "user-123", "username": username}]
@@ -20,6 +23,8 @@ class MockAdminClient:
         return None
 
     async def get_user_client_roles(self, user_id, client_id):
+        if user_id == "test-admin":
+            return [{"name": role} for role in self.roles]
         return [{"name": "standard-user"}]
 
     async def assign_client_role(self, user_id, client_id, role_name):
@@ -43,6 +48,7 @@ def client():
 
 
 def authenticate(client, roles):
+    client.app.state.keycloak_admin.roles = list(roles)
     csrf_response = client.get("/auth/csrf")
     assert csrf_response.status_code == 200
     client.headers.update(
@@ -82,9 +88,7 @@ def test_admin_can_search_users(client):
     )
 
     assert response.status_code == 200
-    assert response.json() == [
-        {"id": "user-123", "username": "existing-user"}
-    ]
+    assert response.json() == [{"id": "user-123", "username": "existing-user"}]
 
 
 def test_admin_can_provision_user(client):
@@ -141,15 +145,33 @@ def test_admin_can_read_user_roles(client):
     assert response.json() == ["standard-user"]
 
 
-def test_admin_can_assign_approved_role(client):
+@pytest.mark.parametrize(
+    "role",
+    ["identity-admin", "security-analyst", "auditor"],
+)
+def test_admin_cannot_assign_privileged_role_directly(client, role):
     authenticate(client, ["identity-admin"])
 
     response = client.post(
         "/api/v1/admin/users/user-123/roles",
-        json={"role": "auditor"},
+        json={"role": role},
     )
 
-    assert response.status_code == 204
+    assert response.status_code == 403
+    assert "JIT approval workflow" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "role",
+    ["identity-admin", "security-analyst", "auditor"],
+)
+def test_admin_cannot_remove_privileged_role_directly(client, role):
+    authenticate(client, ["identity-admin"])
+
+    response = client.delete(f"/api/v1/admin/users/user-123/roles/{role}")
+
+    assert response.status_code == 403
+    assert "JIT workflow" in response.json()["detail"]
 
 
 def test_unapproved_role_assignment_is_rejected(client):
@@ -166,9 +188,7 @@ def test_unapproved_role_assignment_is_rejected(client):
 def test_admin_can_remove_approved_role(client):
     authenticate(client, ["identity-admin"])
 
-    response = client.delete(
-        "/api/v1/admin/users/user-123/roles/standard-user"
-    )
+    response = client.delete("/api/v1/admin/users/user-123/roles/standard-user")
 
     assert response.status_code == 204
 
@@ -176,9 +196,7 @@ def test_admin_can_remove_approved_role(client):
 def test_unapproved_role_removal_is_rejected(client):
     authenticate(client, ["identity-admin"])
 
-    response = client.delete(
-        "/api/v1/admin/users/user-123/roles/realm-admin"
-    )
+    response = client.delete("/api/v1/admin/users/user-123/roles/realm-admin")
 
     assert response.status_code == 422
 
@@ -205,16 +223,19 @@ def test_user_search_does_not_expose_unapproved_fields(client):
 
     class SensitiveMock(MockAdminClient):
         async def find_users(self, username):
-            return [{
-                "id": "user-123",
-                "username": username,
-                "email": "user@example.test",
-                "credentials": [{"type": "password"}],
-                "access": {"manage": True},
-                "secret": "must-not-leak",
-            }]
+            return [
+                {
+                    "id": "user-123",
+                    "username": username,
+                    "email": "user@example.test",
+                    "credentials": [{"type": "password"}],
+                    "access": {"manage": True},
+                    "secret": "must-not-leak",
+                }
+            ]
 
     client.app.state.keycloak_admin = SensitiveMock()
+    client.app.state.keycloak_admin.roles = ["identity-admin"]
 
     response = client.get(
         "/api/v1/admin/users",
@@ -281,12 +302,12 @@ def test_user_status_update_records_successful_audit_event(client):
     assert event["details"] == {"enabled": False}
 
 
-def test_role_assignment_records_successful_audit_event(client):
+def test_standard_user_assignment_records_successful_audit_event(client):
     authenticate(client, ["identity-admin"])
 
     response = client.post(
         "/api/v1/admin/users/user-123/roles",
-        json={"role": "auditor"},
+        json={"role": "standard-user"},
     )
 
     assert response.status_code == 204
@@ -294,15 +315,13 @@ def test_role_assignment_records_successful_audit_event(client):
     assert event["action"] == "user.role.assign"
     assert event["target_user_id"] == "user-123"
     assert event["outcome"] == "success"
-    assert event["details"] == {"role": "auditor"}
+    assert event["details"] == {"role": "standard-user"}
 
 
 def test_role_removal_records_successful_audit_event(client):
     authenticate(client, ["identity-admin"])
 
-    response = client.delete(
-        "/api/v1/admin/users/user-123/roles/standard-user"
-    )
+    response = client.delete("/api/v1/admin/users/user-123/roles/standard-user")
 
     assert response.status_code == 204
     event = client.app.state.audit_events[-1]
@@ -320,6 +339,7 @@ def test_keycloak_failure_records_failed_audit_event(client):
             raise RuntimeError("Simulated identity-provider failure")
 
     client.app.state.keycloak_admin = FailingAdminClient()
+    client.app.state.keycloak_admin.roles = ["identity-admin"]
 
     response = client.patch(
         "/api/v1/admin/users/user-123/status",
@@ -339,9 +359,7 @@ def test_audit_failure_returns_service_unavailable(client):
     def failing_audit_writer(**event):
         raise RuntimeError("Simulated database failure")
 
-    client.app.dependency_overrides[get_audit_writer] = (
-        lambda: failing_audit_writer
-    )
+    client.app.dependency_overrides[get_audit_writer] = lambda: failing_audit_writer
 
     response = client.patch(
         "/api/v1/admin/users/user-123/status",

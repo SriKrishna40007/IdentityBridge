@@ -31,6 +31,13 @@ ALLOWED_ROLES = {
 }
 
 
+PRIVILEGED_ROLES = {
+    "identity-admin",
+    "security-analyst",
+    "auditor",
+}
+
+
 def get_admin_client(request: Request) -> KeycloakAdminClient:
     return request.app.state.keycloak_admin
 
@@ -206,6 +213,12 @@ async def assign_user_role(
             detail="Role is not an approved IdentityBridge client role",
         )
 
+    if payload.role in PRIVILEGED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Privileged roles must be granted through the JIT approval workflow",
+        )
+
     try:
         await admin.assign_client_role(
             user_id,
@@ -251,6 +264,12 @@ async def remove_user_role(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Role is not an approved IdentityBridge client role",
+        )
+
+    if role_name in PRIVILEGED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Privileged roles must be managed through the JIT workflow",
         )
 
     try:

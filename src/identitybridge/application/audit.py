@@ -48,8 +48,5 @@ def write_lifecycle_audit(
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Identity-provider operation may have completed, "
-                "but audit persistence failed"
-            ),
+            detail=("Identity-provider operation may have completed, but audit persistence failed"),
         ) from error

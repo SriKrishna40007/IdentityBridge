@@ -18,25 +18,55 @@ def get_current_user(request: Request) -> dict[str, Any]:
 
 
 def require_roles(*required_roles: str) -> Callable:
-    """Require at least one specified client role."""
+    """Require current Keycloak client roles, not stale session claims."""
 
     if not required_roles or any(
-        not isinstance(role, str) or not role.strip()
-        for role in required_roles
+        not isinstance(role, str) or not role.strip() for role in required_roles
     ):
         raise ValueError("At least one valid role must be specified")
 
-    def role_checker(
+    async def role_checker(
+        request: Request,
         user: Annotated[dict[str, Any], Depends(get_current_user)],
     ) -> dict[str, Any]:
-        user_roles = user.get("roles", [])
+        admin = getattr(request.app.state, "keycloak_admin", None)
+        settings = getattr(request.app.state, "settings", None)
+        client_id = getattr(settings, "oidc_client_id", None)
 
-        if not isinstance(user_roles, list):
-            user_roles = []
+        if admin is None or not isinstance(client_id, str) or not client_id:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Current permissions could not be verified",
+            )
 
-        if not set(required_roles).intersection(
-            role for role in user_roles if isinstance(role, str)
-        ):
+        try:
+            role_mappings = await admin.get_user_client_roles(
+                user["sub"],
+                client_id,
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Current permissions could not be verified",
+            ) from None
+
+        if not isinstance(role_mappings, list):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Current permissions could not be verified",
+            )
+
+        current_roles = [
+            item["name"]
+            for item in role_mappings
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+
+        # Refresh the session snapshot after successful verification.
+        user["roles"] = current_roles
+        request.session["user"] = user
+
+        if not set(required_roles).intersection(current_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",

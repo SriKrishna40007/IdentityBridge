@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Annotated
 
 import pytest
@@ -11,8 +12,23 @@ from identitybridge.security.authorization import (
 )
 
 
-def create_test_app() -> FastAPI:
+class MockKeycloakAdmin:
+    def __init__(self, roles=None, fail=False):
+        self.roles = roles or []
+        self.fail = fail
+        self.calls = []
+
+    async def get_user_client_roles(self, user_id, client_id):
+        self.calls.append((user_id, client_id))
+        if self.fail:
+            raise RuntimeError("Keycloak unavailable")
+        return [{"name": role} for role in self.roles]
+
+
+def create_test_app(roles=None, fail=False):
     app = FastAPI()
+    app.state.settings = SimpleNamespace(oidc_client_id="identitybridge-api")
+    app.state.keycloak_admin = MockKeycloakAdmin(roles=roles, fail=fail)
 
     app.add_middleware(
         SessionMiddleware,
@@ -48,16 +64,20 @@ def client():
     return TestClient(create_test_app())
 
 
+def authenticate(client, roles):
+    client.app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "test-user",
+        "roles": roles,
+    }
+
+
 def test_unauthenticated_user_receives_401(client):
     response = client.get("/test/session")
     assert response.status_code == 401
 
 
 def test_authenticated_user_can_access_session(client):
-    client.app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
-        "roles": ["standard-user"],
-    }
+    authenticate(client, ["standard-user"])
 
     response = client.get("/test/session")
 
@@ -65,45 +85,56 @@ def test_authenticated_user_can_access_session(client):
     assert response.json()["sub"] == "test-user"
 
 
-def test_user_with_required_role_receives_access(client):
-    client.app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
-        "roles": ["identity-admin"],
-    }
+def test_user_with_current_required_role_receives_access():
+    app = create_test_app(["identity-admin"])
+    client = TestClient(app)
+    authenticate(client, ["standard-user"])
 
     response = client.get("/test/admin")
+
     assert response.status_code == 200
+    assert app.state.keycloak_admin.calls == [("test-user", "identitybridge-api")]
 
 
-def test_user_without_required_role_receives_403(client):
-    client.app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
-        "roles": ["standard-user"],
-    }
+def test_stale_session_role_does_not_grant_access():
+    app = create_test_app(["standard-user"])
+    client = TestClient(app)
+    authenticate(client, ["identity-admin"])
 
     response = client.get("/test/admin")
+
     assert response.status_code == 403
-    assert response.json()["detail"] == "Insufficient permissions"
 
 
-def test_user_with_any_allowed_role_receives_access(client):
-    client.app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
-        "roles": ["identity-admin"],
-    }
+def test_current_role_refreshes_session_snapshot():
+    app = create_test_app(["security-analyst"])
+    client = TestClient(app)
+    authenticate(client, ["standard-user"])
 
     response = client.get("/test/analyst")
+
     assert response.status_code == 200
 
 
-def test_user_with_empty_roles_receives_403(client):
-    client.app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
-        "roles": [],
-    }
+def test_keycloak_failure_fails_closed():
+    app = create_test_app(fail=True)
+    client = TestClient(app)
+    authenticate(client, ["identity-admin"])
 
     response = client.get("/test/admin")
-    assert response.status_code == 403
+
+    assert response.status_code == 503
+
+
+def test_missing_keycloak_dependency_fails_closed():
+    app = create_test_app(["identity-admin"])
+    app.state.keycloak_admin = None
+    client = TestClient(app)
+    authenticate(client, ["identity-admin"])
+
+    response = client.get("/test/admin")
+
+    assert response.status_code == 503
 
 
 def test_invalid_role_configuration_is_rejected():
