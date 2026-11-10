@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased — JIT privileged access
+## v2.1.0 — 2026-11-10 — JIT privileged access and step-up authentication
+
+### Added
+- OIDC step-up authentication for privileged approval, requiring ACR 2 and authentication freshness within 300 seconds.
+- Session-bound assurance validation tied to the authenticated subject.
+
 
 ### Added
 - JIT privileged-access request, approval and rejection API.
@@ -18,6 +23,7 @@
 - `exclusive_role_writer=False`; absent-role assignment is not assumed safe.
 
 ### Validation
-- Full PostgreSQL-backed suite: 160 passed.
+- Full test suite: 197 passed, 2 skipped; PostgreSQL integration separately: 2 passed.
 - PostgreSQL lifecycle atomicity: 2 passed.
-- Ruff and compileall passed; four deprecation warnings remain.
+- Ruff passed; four non-failing deprecation warnings remain.
+- Manual OIDC login, callback and step-up smoke tests passed.

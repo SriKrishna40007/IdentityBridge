@@ -5,7 +5,7 @@ ASGIApp = Callable[..., Awaitable[None]]
 
 
 class SecurityHeadersMiddleware:
-    """Add defensive browser security headers to HTTP responses."""
+    """Set defensive browser security headers on HTTP responses."""
 
     def __init__(self, app: ASGIApp, enable_hsts: bool = False) -> None:
         self.app = app
@@ -21,9 +21,25 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        async def send_with_security_headers(message: dict[str, Any]) -> None:
+        async def send_with_security_headers(
+            message: dict[str, Any],
+        ) -> None:
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
+                managed_headers = {
+                    b"x-content-type-options",
+                    b"x-frame-options",
+                    b"referrer-policy",
+                    b"permissions-policy",
+                    b"x-xss-protection",
+                    b"strict-transport-security",
+                }
+
+                headers = [
+                    (name, value)
+                    for name, value in message.get("headers", [])
+                    if name.lower() not in managed_headers
+                ]
+
                 headers.extend(
                     [
                         (b"x-content-type-options", b"nosniff"),

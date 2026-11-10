@@ -12,7 +12,7 @@ from identitybridge.infrastructure.audit_models import AuditEvent
 from identitybridge.infrastructure.database import get_db
 from identitybridge.infrastructure.privilege_request_models import PrivilegeRequest
 from identitybridge.main import create_app
-from identitybridge.security.authorization import get_current_user
+from identitybridge.security.authorization import get_current_user, require_recent_step_up
 
 
 class MockKeycloakAdmin:
@@ -52,6 +52,16 @@ def api_context(monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "approver-789",
+        "preferred_username": "test-admin",
+        "roles": ["identity-admin"],
+    }
+    app.dependency_overrides[require_recent_step_up] = lambda: {
+        "sub": "approver-789",
+        "preferred_username": "test-admin",
+        "roles": ["identity-admin"],
+    }
+    app.dependency_overrides[require_recent_step_up] = lambda: {
         "sub": "approver-789",
         "preferred_username": "test-admin",
         "roles": ["identity-admin"],
@@ -171,3 +181,30 @@ def test_non_admin_cannot_decide_privilege_request(api_context):
     assert response.status_code == 403
     assert api_context.item.status == "pending"
     assert api_context.db.commit.call_count == 0
+
+
+def test_approval_without_step_up_is_forbidden_and_not_persisted(api_context):
+    api_context.client.app.dependency_overrides.pop(require_recent_step_up)
+
+    response = api_context.client.post(
+        f"/api/v1/privileges/{api_context.item.id}/approve",
+        json={"comment": "Approval without step-up must be blocked."},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Step-up authentication required"
+    assert api_context.item.status == "pending"
+    api_context.db.commit.assert_not_called()
+    api_context.db.add.assert_not_called()
+
+
+def test_rejection_does_not_require_step_up(api_context):
+    api_context.client.app.dependency_overrides.pop(require_recent_step_up)
+
+    response = api_context.client.post(
+        f"/api/v1/privileges/{api_context.item.id}/reject",
+        json={"comment": "Rejected after review."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"

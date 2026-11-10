@@ -63,12 +63,16 @@ User administration endpoints are under `/api/v1/admin/users`; example protected
 
 ## Latest recorded validation
 
-- Full suite with PostgreSQL integration enabled: **160 passed**.
+- Added OIDC step-up authentication requiring ACR 2 and authentication freshness within 300 seconds for privileged approval.
+- Privilege approval requires both the `identity-admin` role and recent step-up authentication.
+
+
+- Full test suite: **197 passed, 2 skipped**; PostgreSQL integration separately: **2 passed**.
 - PostgreSQL lifecycle atomicity tests: **2 passed**.
-- Targeted JIT lifecycle/worker tests: **22 passed**.
+- Ruff: passed; `git diff --check`: passed.
 - Ruff: passed.
-- Python compilation: passed.
 - Four deprecation warnings were reported, without test failures.
+- Manual browser OIDC login, callback, and step-up authentication: passed. Brute-force protection configured and visually verified.
 - Project owner reports successful manual real-world conflict testing; see [E2E/release testing](docs/testing/E2E_AND_RELEASE_TESTING.md).
 
 ## Documentation
@@ -87,3 +91,7 @@ User administration endpoints are under `/api/v1/admin/users`; example protected
 ## Production warning
 
 The local Compose setup uses Keycloak development mode. It is not production configuration. Production requires HTTPS, hardened identity/database infrastructure, secret management, monitoring, backup/restore validation, least-privilege review and operational procedures. A passing test suite is not a production security certification.
+
+## Keycloak step-up MFA (visual walkthrough)
+
+See [Keycloak Browser Step-Up MFA — Visual Setup Guide](docs/KEYCLOAK_STEP_UP_SETUP.md) for the beginner-friendly configuration walkthrough, screenshots, ACR-to-LoA mapping, Browser-flow binding, test evidence and troubleshooting.

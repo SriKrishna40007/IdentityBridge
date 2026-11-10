@@ -28,7 +28,11 @@ from identitybridge.infrastructure.keycloak.admin_client import (
 from identitybridge.infrastructure.privilege_request_models import (
     PrivilegeRequest,
 )
-from identitybridge.security.authorization import get_current_user, require_roles
+from identitybridge.security.authorization import (
+    get_current_user,
+    require_recent_step_up,
+    require_roles,
+)
 
 router = APIRouter(prefix="/api/v1/privileges", tags=["Just-in-time privileged access"])
 
@@ -135,7 +139,10 @@ def list_pending_privilege_requests(
 @router.post(
     "/{request_id}/approve",
     response_model=PrivilegeRequestRead,
-    dependencies=[Depends(require_roles("identity-admin"))],
+    dependencies=[
+        Depends(require_roles("identity-admin")),
+        Depends(require_recent_step_up),
+    ],
 )
 async def approve_privilege_request(
     request_id: UUID,

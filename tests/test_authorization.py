@@ -1,145 +1,113 @@
-from types import SimpleNamespace
-from typing import Annotated
+import time
 
 import pytest
-from fastapi import Depends, FastAPI
-from fastapi.testclient import TestClient
-from starlette.middleware.sessions import SessionMiddleware
+from fastapi import HTTPException
+from starlette.requests import Request
 
-from identitybridge.security.authorization import (
-    get_current_user,
-    require_roles,
-)
+from identitybridge.security.authorization import require_recent_step_up
+
+USER = {"sub": "user-123", "preferred_username": "test-user"}
 
 
-class MockKeycloakAdmin:
-    def __init__(self, roles=None, fail=False):
-        self.roles = roles or []
-        self.fail = fail
-        self.calls = []
+def make_request(assurance: dict | None = None) -> Request:
+    session = {"user": USER.copy()}
+    if assurance is not None:
+        session["assurance"] = assurance
 
-    async def get_user_client_roles(self, user_id, client_id):
-        self.calls.append((user_id, client_id))
-        if self.fail:
-            raise RuntimeError("Keycloak unavailable")
-        return [{"name": role} for role in self.roles]
-
-
-def create_test_app(roles=None, fail=False):
-    app = FastAPI()
-    app.state.settings = SimpleNamespace(oidc_client_id="identitybridge-api")
-    app.state.keycloak_admin = MockKeycloakAdmin(roles=roles, fail=fail)
-
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key="test-session-secret-that-is-long-enough",
-    )
-
-    @app.get("/test/session")
-    async def session_test(
-        user: Annotated[dict, Depends(get_current_user)],
-    ):
-        return user
-
-    @app.get("/test/admin")
-    async def admin_test(
-        user: Annotated[dict, Depends(require_roles("identity-admin"))],
-    ):
-        return {"message": "admin access granted"}
-
-    @app.get("/test/analyst")
-    async def analyst_test(
-        user: Annotated[
-            dict,
-            Depends(require_roles("security-analyst", "identity-admin")),
-        ],
-    ):
-        return {"message": "analyst access granted"}
-
-    return app
+    return Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/test",
+        "headers": [],
+        "session": session,
+    })
 
 
-@pytest.fixture
-def client():
-    return TestClient(create_test_app())
-
-
-def authenticate(client, roles):
-    client.app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
-        "roles": roles,
+def valid_assurance() -> dict:
+    now = time.time()
+    return {
+        "sub": USER["sub"],
+        "acr": "2",
+        "verified_at": now,
+        "auth_time": now - 60,
     }
 
 
-def test_unauthenticated_user_receives_401(client):
-    response = client.get("/test/session")
-    assert response.status_code == 401
+def test_accepts_recent_step_up_for_same_user() -> None:
+    request = make_request(valid_assurance())
+    assert require_recent_step_up(request, USER.copy())["sub"] == USER["sub"]
 
 
-def test_authenticated_user_can_access_session(client):
-    authenticate(client, ["standard-user"])
-
-    response = client.get("/test/session")
-
-    assert response.status_code == 200
-    assert response.json()["sub"] == "test-user"
-
-
-def test_user_with_current_required_role_receives_access():
-    app = create_test_app(["identity-admin"])
-    client = TestClient(app)
-    authenticate(client, ["standard-user"])
-
-    response = client.get("/test/admin")
-
-    assert response.status_code == 200
-    assert app.state.keycloak_admin.calls == [("test-user", "identitybridge-api")]
+def test_rejects_missing_assurance() -> None:
+    request = make_request()
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Step-up authentication required"
 
 
-def test_stale_session_role_does_not_grant_access():
-    app = create_test_app(["standard-user"])
-    client = TestClient(app)
-    authenticate(client, ["identity-admin"])
+def test_rejects_assurance_for_different_user() -> None:
+    assurance = valid_assurance()
+    assurance["sub"] = "another-user"
+    request = make_request(assurance)
 
-    response = client.get("/test/admin")
-
-    assert response.status_code == 403
-
-
-def test_current_role_refreshes_session_snapshot():
-    app = create_test_app(["security-analyst"])
-    client = TestClient(app)
-    authenticate(client, ["standard-user"])
-
-    response = client.get("/test/analyst")
-
-    assert response.status_code == 200
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
 
 
-def test_keycloak_failure_fails_closed():
-    app = create_test_app(fail=True)
-    client = TestClient(app)
-    authenticate(client, ["identity-admin"])
+@pytest.mark.parametrize("acr", ["1", "3", None, 2])
+def test_rejects_incorrect_acr(acr: object) -> None:
+    assurance = valid_assurance()
+    assurance["acr"] = acr
+    request = make_request(assurance)
 
-    response = client.get("/test/admin")
-
-    assert response.status_code == 503
-
-
-def test_missing_keycloak_dependency_fails_closed():
-    app = create_test_app(["identity-admin"])
-    app.state.keycloak_admin = None
-    client = TestClient(app)
-    authenticate(client, ["identity-admin"])
-
-    response = client.get("/test/admin")
-
-    assert response.status_code == 503
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
+    assert "assurance" not in request.session
 
 
-def test_invalid_role_configuration_is_rejected():
-    with pytest.raises(ValueError):
-        require_roles()
+def test_rejects_stale_authentication() -> None:
+    assurance = valid_assurance()
+    assurance["auth_time"] = time.time() - 301
+    request = make_request(assurance)
 
-    with pytest.raises(ValueError):
-        require_roles("")
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
+    assert "assurance" not in request.session
+
+
+def test_rejects_expired_step_up_verification() -> None:
+    assurance = valid_assurance()
+    assurance["verified_at"] = time.time() - 301
+    request = make_request(assurance)
+
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
+    assert "assurance" not in request.session
+
+
+@pytest.mark.parametrize("verified_at", [float("nan"), float("inf"), float("-inf")])
+def test_rejects_non_finite_verification_time(verified_at: float) -> None:
+    assurance = valid_assurance()
+    assurance["verified_at"] = verified_at
+    request = make_request(assurance)
+
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
+    assert "assurance" not in request.session
+
+
+def test_rejects_future_verification_time() -> None:
+    assurance = valid_assurance()
+    assurance["verified_at"] = time.time() + 60
+    request = make_request(assurance)
+
+    with pytest.raises(HTTPException) as exc:
+        require_recent_step_up(request, USER.copy())
+    assert exc.value.status_code == 403
+    assert "assurance" not in request.session

@@ -1,7 +1,12 @@
+
+import math
+import time
 from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
+
+from identitybridge.security.oidc_assurance import validate_oidc_assurance
 
 
 def get_current_user(request: Request) -> dict[str, Any]:
@@ -13,6 +18,60 @@ def get_current_user(request: Request) -> dict[str, Any]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
         )
+
+    return user
+
+
+def require_recent_step_up(
+    request: Request,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Require recent LoA2 authentication for sensitive operations."""
+    assurance = request.session.get("assurance")
+
+    if not isinstance(assurance, dict):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Step-up authentication required",
+        )
+
+    if assurance.get("sub") != user["sub"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Step-up authentication required",
+        )
+
+    verified_at = assurance.get("verified_at")
+    current_time = time.time()
+
+    if (
+        isinstance(verified_at, bool)
+        or not isinstance(verified_at, (int, float))
+        or not math.isfinite(verified_at)
+        or current_time < verified_at
+        or current_time - verified_at > 300
+    ):
+        request.session.pop("assurance", None)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Step-up authentication expired",
+        )
+
+    try:
+        validate_oidc_assurance(
+            {
+                "acr": assurance.get("acr"),
+                "auth_time": assurance.get("auth_time"),
+            },
+            required_acr="2",
+            max_age_seconds=300,
+        )
+    except ValueError as exc:
+        request.session.pop("assurance", None)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Step-up authentication required",
+        ) from exc
 
     return user
 
